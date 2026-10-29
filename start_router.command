@@ -126,9 +126,9 @@ cat <<EOF | sudo tee /etc/bootpd.plist > /dev/null
 				<string>${DHCP_START}</string>
 				<string>${DHCP_END}</string>
 			</array>
-			<key>router</key>
+			<key>dhcp_router</key>
 			<string>${LAN_IP}</string>
-			<key>dhcp_dns_server</key>
+			<key>dhcp_domain_name_server</key>
 			<array>
 				${DNS_XML}
 			</array>
@@ -146,6 +146,14 @@ EOF
 
 # DHCPサーバー起動
 sudo /usr/libexec/bootpd -v -c /etc/bootpd.plist &
+BOOTPD_PID=$!
+sleep 1
+if ! kill -0 "$BOOTPD_PID" 2>/dev/null; then
+    echo "エラー: DHCPサーバー (bootpd) の起動に失敗しました。"
+    echo "----- bootpd のログ -----"
+    sudo log show --last 1m --style compact --predicate 'process == "bootpd"' 2>/dev/null
+    exit 1
+fi
 
 echo ""
 echo "=========================================="
