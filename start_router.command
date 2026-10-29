@@ -8,14 +8,22 @@ echo ""
 # 1. 管理者権限の事前確認
 sudo -v || exit 1
 
+DNSMASQ_CONF="/etc/mac-router-dnsmasq.conf"
+DNSMASQ_PID_FILE="/var/run/mac-router-dnsmasq.pid"
+DNSMASQ_LOG="/tmp/mac-router-dnsmasq.log"
+DNSMASQ_LEASE_FILE="/tmp/mac-router-dnsmasq.leases"
+DNSMASQ_PID=""
+
 # 終了処理（DHCPおよびNATのクリア）
 cleanup() {
     echo ""
     echo "停止処理を実行中..."
-    sudo killall bootpd 2>/dev/null
+    if [ -n "$DNSMASQ_PID" ] && sudo kill -0 "$DNSMASQ_PID" 2>/dev/null; then
+        sudo kill "$DNSMASQ_PID" 2>/dev/null
+    fi
     sudo pfctl -d 2>/dev/null
     sudo sysctl -w net.inet.ip.forwarding=0 > /dev/null
-    sudo rm -f /etc/bootpd.plist 2>/dev/null
+    sudo rm -f "$DNSMASQ_CONF" "$DNSMASQ_PID_FILE" "$DNSMASQ_LOG" "$DNSMASQ_LEASE_FILE" 2>/dev/null
     echo "ルーターおよびDHCPサーバーを停止しました。"
     exit 0
 }
@@ -81,15 +89,18 @@ echo ""
 echo "上流のDNSアドレスを取得中..."
 WAN_DNS_RAW=$(scutil --dns | awk '/scoped DNS configuration/{flag=1} flag; /nameserver/ {if(flag) print $3}' | grep -v '^127\.' | head -n 2)
 
-DNS_XML=""
+DNSMASQ_DNS_SERVERS=""
 if [ -z "$WAN_DNS_RAW" ]; then
-    DNS_XML="<string>8.8.8.8</string><string>1.1.1.1</string>"
+    DNSMASQ_DNS_SERVERS="8.8.8.8,1.1.1.1"
     echo "⚠️ 上流DNSが取得できなかったため、パブリックDNS (8.8.8.8) を使用します。"
 else
     echo "✅ 上流DNS検出成功:"
     for dns in $WAN_DNS_RAW; do
         echo "   - $dns"
-        DNS_XML="${DNS_XML}<string>${dns}</string>"
+        if [ -n "$DNSMASQ_DNS_SERVERS" ]; then
+            DNSMASQ_DNS_SERVERS="${DNSMASQ_DNS_SERVERS},"
+        fi
+        DNSMASQ_DNS_SERVERS="${DNSMASQ_DNS_SERVERS}${dns}"
     done
 fi
 
@@ -104,54 +115,44 @@ sudo pfctl -d 2>/dev/null
 sudo pfctl -F all > /dev/null 2>&1
 sudo pfctl -f /etc/pf.nat.conf -e > /dev/null 2>&1
 
-# 6. macOS標準 DHCP (bootpd.plist) 設定ファイルの生成と起動
-sudo killall bootpd 2>/dev/null
+# 6. dnsmasq (DHCP専用) の設定と起動
+if ! command -v dnsmasq > /dev/null 2>&1; then
+    echo "エラー: dnsmasq が見つかりません。HomebrewまたはMacPortsでインストールしてください。"
+    echo "       sudo port install dnsmasq"
+    exit 1
+fi
 
-cat <<EOF | sudo tee /etc/bootpd.plist > /dev/null
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>Subnets</key>
-	<array>
-		<dict>
-			<key>_name</key>
-			<string>MacRouterLAN</string>
-			<key>net_mask</key>
-			<string>255.255.255.0</string>
-			<key>net_address</key>
-			<string>${LAN_SUBNET}.0</string>
-			<key>net_range</key>
-			<array>
-				<string>${DHCP_START}</string>
-				<string>${DHCP_END}</string>
-			</array>
-			<key>dhcp_router</key>
-			<string>${LAN_IP}</string>
-			<key>dhcp_domain_name_server</key>
-			<array>
-				${DNS_XML}
-			</array>
-		</dict>
-	</array>
-	<key>bootp_enabled</key>
-	<false/>
-	<key>dhcp_enabled</key>
-	<array>
-		<string>${LAN_IF}</string>
-	</array>
-</dict>
-</plist>
+cat <<EOF | sudo tee "$DNSMASQ_CONF" > /dev/null
+interface=${LAN_IF}
+bind-interfaces
+dhcp-authoritative
+dhcp-range=${DHCP_START},${DHCP_END},255.255.255.0,12h
+dhcp-option=3,${LAN_IP}
+dhcp-option=6,${DNSMASQ_DNS_SERVERS}
+no-dhcp-interface=${WAN_IF}
+port=0
+pid-file=${DNSMASQ_PID_FILE}
+dhcp-leasefile=${DNSMASQ_LEASE_FILE}
+log-dhcp
 EOF
 
-# DHCPサーバー起動
-sudo /usr/libexec/bootpd -v -c /etc/bootpd.plist &
+# 前回の異常終了で残った、このルーター専用のdnsmasqを停止します。
+if [ -f "$DNSMASQ_PID_FILE" ]; then
+    OLD_DNSMASQ_PID=$(sudo cat "$DNSMASQ_PID_FILE" 2>/dev/null)
+    if [ -n "$OLD_DNSMASQ_PID" ] && sudo kill -0 "$OLD_DNSMASQ_PID" 2>/dev/null; then
+        sudo kill "$OLD_DNSMASQ_PID" 2>/dev/null
+        sleep 1
+    fi
+    sudo rm -f "$DNSMASQ_PID_FILE"
+fi
+
+sudo dnsmasq --conf-file="$DNSMASQ_CONF" --no-daemon > "$DNSMASQ_LOG" 2>&1 &
+DNSMASQ_PID=$!
 sleep 1
-BOOTPD_PID=$(pgrep -x bootpd | head -n 1)
-if [ -z "$BOOTPD_PID" ]; then
-    echo "エラー: DHCPサーバー (bootpd) の起動に失敗しました。"
-    echo "----- bootpd のログ -----"
-    sudo log show --last 1m --info --style compact --predicate 'process == "bootpd"' 2>/dev/null
+if ! sudo kill -0 "$DNSMASQ_PID" 2>/dev/null; then
+    echo "エラー: DHCPサーバー (dnsmasq) の起動に失敗しました。"
+    echo "----- dnsmasq のログ -----"
+    sudo cat "$DNSMASQ_LOG" 2>/dev/null
     exit 1
 fi
 
@@ -163,6 +164,7 @@ echo "  上流 (WAN) : $WAN_NAME ($WAN_IF)"
 echo "  下流 (LAN) : $LAN_NAME ($LAN_IF)"
 echo "  Gateway IP : $LAN_IP"
 echo "  DHCP Range : $DHCP_START 〜 $DHCP_END"
+echo "  DHCP Server: dnsmasq"
 echo "=========================================="
 echo ""
 read -r -p "Enterキーを押すと停止します..."

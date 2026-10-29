@@ -10,9 +10,17 @@ sudo -v || exit 1
 
 echo "設定を初期状態に戻しています..."
 
-# 2. DHCPサーバー (bootpd) の停止
-sudo killall bootpd 2>/dev/null
-echo "  [✓] DHCPサーバー (bootpd) を停止しました"
+# 2. DHCPサーバー (dnsmasq) の停止
+DNSMASQ_PID_FILE="/var/run/mac-router-dnsmasq.pid"
+DNSMASQ_LEASE_FILE="/tmp/mac-router-dnsmasq.leases"
+if [ -f "$DNSMASQ_PID_FILE" ]; then
+    DNSMASQ_PID=$(sudo cat "$DNSMASQ_PID_FILE" 2>/dev/null)
+    if [ -n "$DNSMASQ_PID" ] && sudo kill -0 "$DNSMASQ_PID" 2>/dev/null; then
+        sudo kill "$DNSMASQ_PID" 2>/dev/null
+    fi
+    sudo rm -f "$DNSMASQ_PID_FILE"
+fi
+echo "  [✓] DHCPサーバー (dnsmasq) を停止しました"
 
 # 3. Packet Filter (pf) NAT機能の無効化
 sudo pfctl -d 2>/dev/null
@@ -27,6 +35,13 @@ if [ -f /etc/pf.nat.conf ]; then
     sudo rm /etc/pf.nat.conf
     echo "  [✓] NAT設定ファイルを削除しました"
 fi
+
+if [ -f /etc/mac-router-dnsmasq.conf ]; then
+    sudo rm /etc/mac-router-dnsmasq.conf
+    echo "  [✓] dnsmasq設定ファイルを削除しました"
+fi
+rm -f /tmp/mac-router-dnsmasq.log
+rm -f "$DNSMASQ_LEASE_FILE"
 
 echo ""
 echo "=========================================="
