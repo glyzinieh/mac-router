@@ -146,12 +146,12 @@ EOF
 
 # DHCPサーバー起動
 sudo /usr/libexec/bootpd -v -c /etc/bootpd.plist &
-BOOTPD_PID=$!
 sleep 1
-if ! kill -0 "$BOOTPD_PID" 2>/dev/null; then
+BOOTPD_PID=$(pgrep -x bootpd | head -n 1)
+if [ -z "$BOOTPD_PID" ]; then
     echo "エラー: DHCPサーバー (bootpd) の起動に失敗しました。"
     echo "----- bootpd のログ -----"
-    sudo log show --last 1m --style compact --predicate 'process == "bootpd"' 2>/dev/null
+    sudo log show --last 1m --info --style compact --predicate 'process == "bootpd"' 2>/dev/null
     exit 1
 fi
 
