@@ -81,8 +81,8 @@ if [ -n "$WAN_IP" ]; then
 fi
 
 LAN_IP="$LAN_SUBNET.1"
-DHCP_START="$LAN_SUBNET.50"
-DHCP_END="$LAN_SUBNET.150"
+DHCP_START="$LAN_SUBNET.2"
+DHCP_END="$LAN_SUBNET.254"
 
 # 4. 上流DNSの自動検出
 echo ""
